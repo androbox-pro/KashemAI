@@ -1,0 +1,126 @@
+name: VIPOS CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc binutils make python3 qemu-system-x86
+
+      - name: Build VIPOS x86
+        run: make clean all
+
+      - name: Run static/package checks
+        run: make check
+
+      - name: Boot VIPOS x86 in headless QEMU
+        shell: bash
+        run: |
+          set +e
+          timeout 10s qemu-system-i386 \
+            -drive format=raw,file=vipos.img \
+            -display none \
+            -monitor none \
+            -serial file:qemu-serial.log \
+            -debugcon file:qemu-debug.log \
+            -global isa-debugcon.iobase=0xe9 \
+            -no-reboot \
+            -no-shutdown
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "QEMU exited unexpectedly with status $status"
+            cat qemu-debug.log || true
+            exit "$status"
+          fi
+          cat qemu-debug.log qemu-serial.log > qemu-combined.log 2>/dev/null || true
+          grep -q "VIPOS_BOOT_START" qemu-combined.log
+          grep -q "VIPOS_BOOTLOADER_OK" qemu-combined.log
+          grep -q "VIPOS_KERNEL_OK" qemu-combined.log
+          echo "VIPOS x86 headless boot test passed."
+
+      - name: Upload x86 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VIPOS-build-x86
+          if-no-files-found: error
+          path: |
+            vipos.img
+            build/kernel.elf
+            build/kernel.bin
+            build/boot.bin
+            build/demo.vip
+            qemu-debug.log
+            qemu-serial.log
+            qemu-combined.log
+
+  arm64-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM64 build and QEMU tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld make python3 qemu-system-arm
+
+      - name: Build VIPOS AArch64
+        run: make arm64 arm64-check
+
+      - name: Boot VIPOS AArch64 in headless QEMU
+        shell: bash
+        run: |
+          set +e
+          timeout 10s qemu-system-aarch64 \
+            -M virt \
+            -cpu cortex-a53 \
+            -m 256M \
+            -display none \
+            -monitor none \
+            -serial file:arm64-serial.log \
+            -no-reboot \
+            -no-shutdown \
+            -kernel build/vipos-arm64.elf
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "QEMU AArch64 exited unexpectedly with status $status"
+            cat arm64-serial.log || true
+            exit "$status"
+          fi
+          echo "--- AArch64 serial console ---"
+          cat arm64-serial.log || true
+          grep -q "VIPOS_KERNEL_OK" arm64-serial.log || {
+            echo "VIPOS AArch64 kernel marker not found"
+            exit 1
+          }
+          grep -q "VIPOS_ARM64_OK" arm64-serial.log || {
+            echo "VIPOS AArch64 platform marker not found"
+            exit 1
+          }
+          echo "VIPOS AArch64 headless boot test passed."
+
+      - name: Upload AArch64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VIPOS-build-arm64
+          if-no-files-found: error
+          path: |
+            build/vipos-arm64.elf
+            build/demo.vip
+            arm64-serial.log

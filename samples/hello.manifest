@@ -1,0 +1,5 @@
+name=VIPOS Hello
+id=vip.demo.hello
+version=1.0
+entry=payload.bin
+permissions=
